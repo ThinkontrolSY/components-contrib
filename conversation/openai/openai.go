@@ -16,19 +16,20 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"reflect"
 
 	"github.com/dapr/components-contrib/conversation"
+	"github.com/dapr/components-contrib/conversation/langchaingokit"
 	"github.com/dapr/components-contrib/metadata"
 	"github.com/dapr/kit/logger"
 	kmeta "github.com/dapr/kit/metadata"
 
-	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/openai"
 )
 
 type OpenAI struct {
-	llm llms.Model
+	langchaingokit.LLM
 
 	logger logger.Logger
 }
@@ -41,18 +42,19 @@ func NewOpenAI(logger logger.Logger) conversation.Conversation {
 	return o
 }
 
-const defaultModel = "gpt-4o"
-
 func (o *OpenAI) Init(ctx context.Context, meta conversation.Metadata) error {
-	md := conversation.LangchainMetadata{}
+	md := OpenAILangchainMetadata{}
 	err := kmeta.DecodeMetadata(meta.Properties, &md)
 	if err != nil {
 		return err
 	}
 
-	model := defaultModel
-	if md.Model != "" {
-		model = md.Model
+	// Resolve model via central helper (uses metadata, then env var, then default)
+	var model string
+	if md.APIType == "azure" {
+		model = conversation.GetAzureOpenAIModel(md.Model)
+	} else {
+		model = conversation.GetOpenAIModel(md.Model)
 	}
 	// Create options for OpenAI client
 	options := []openai.Option{
@@ -65,69 +67,36 @@ func (o *OpenAI) Init(ctx context.Context, meta conversation.Metadata) error {
 		options = append(options, openai.WithBaseURL(md.Endpoint))
 	}
 
+	if md.APIType == "azure" {
+		if md.Endpoint == "" || md.APIVersion == "" {
+			return errors.New("endpoint and apiVersion must be provided when apiType is set to 'azure'")
+		}
+
+		options = append(options, openai.WithAPIType(openai.APITypeAzure), openai.WithAPIVersion(md.APIVersion))
+	}
+
 	llm, err := openai.New(options...)
 	if err != nil {
 		return err
 	}
 
-	o.llm = llm
+	o.LLM.Model = llm
 
 	if md.CacheTTL != "" {
-		cachedModel, cacheErr := conversation.CacheModel(ctx, md.CacheTTL, o.llm)
+		cachedModel, cacheErr := conversation.CacheModel(ctx, md.CacheTTL, o.LLM.Model)
 		if cacheErr != nil {
 			return cacheErr
 		}
 
-		o.llm = cachedModel
+		o.LLM.Model = cachedModel
 	}
 	return nil
 }
 
 func (o *OpenAI) GetComponentMetadata() (metadataInfo metadata.MetadataMap) {
-	metadataStruct := conversation.LangchainMetadata{}
+	metadataStruct := OpenAILangchainMetadata{}
 	metadata.GetMetadataInfoFromStructType(reflect.TypeOf(metadataStruct), &metadataInfo, metadata.ConversationType)
 	return
-}
-
-func (o *OpenAI) Converse(ctx context.Context, r *conversation.ConversationRequest) (res *conversation.ConversationResponse, err error) {
-	messages := make([]llms.MessageContent, 0, len(r.Inputs))
-
-	for _, input := range r.Inputs {
-		role := conversation.ConvertLangchainRole(input.Role)
-
-		messages = append(messages, llms.MessageContent{
-			Role: role,
-			Parts: []llms.ContentPart{
-				llms.TextPart(input.Message),
-			},
-		})
-	}
-
-	opts := []llms.CallOption{}
-
-	if r.Temperature > 0 {
-		opts = append(opts, conversation.LangchainTemperature(r.Temperature))
-	}
-
-	resp, err := o.llm.GenerateContent(ctx, messages, opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	outputs := make([]conversation.ConversationResult, 0, len(resp.Choices))
-
-	for i := range resp.Choices {
-		outputs = append(outputs, conversation.ConversationResult{
-			Result:     resp.Choices[i].Content,
-			Parameters: r.Parameters,
-		})
-	}
-
-	res = &conversation.ConversationResponse{
-		Outputs: outputs,
-	}
-
-	return res, nil
 }
 
 func (o *OpenAI) Close() error {

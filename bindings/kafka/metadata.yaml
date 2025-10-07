@@ -352,6 +352,13 @@ metadata:
       It allows sending headers with special characters that are usually not allowed in HTTP headers.
     example: "true"
     default: "false"
+  - name: useAvroJSON
+    type: bool
+    required: false
+    description: |
+      Enables Avro JSON schema for serialization. Only applicable when the subscription uses valueSchemaType=Avro
+    example: "true"
+    default: "false"
   - name: compression
     type: string
     required: false
@@ -361,3 +368,21 @@ metadata:
       The default is none.
     example: '"gzip"'
     default: "none"
+  - name: consumerGroupRebalanceStrategy
+    type: string
+    required: false
+    description: |
+      The strategy to use for consumer group rebalancing.
+    example: '"sticky"'
+    default: '"range"'
+    allowedValues:
+      - "range"
+      - "sticky"
+      - "roundrobin"
+  - name: excludeHeaderMetaRegex
+    type: string
+    required: false
+    description: |
+      A regular expression to exclude keys from being converted to/from headers from/to metadata to avoid unwanted downstream side effects.
+    example: '"^rawPayload|valueSchemaType$"'
+    default: '""'

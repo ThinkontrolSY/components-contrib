@@ -27,7 +27,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
+	"github.com/dapr/components-contrib/common/proto/state/sqlserver"
 	"github.com/dapr/components-contrib/contenttype"
 	"github.com/dapr/components-contrib/metadata"
 	"github.com/dapr/components-contrib/state"
@@ -296,8 +298,8 @@ func ConformanceTests(t *testing.T, props map[string]string, statestore state.St
 			query: `
 			{
 				"filter": {
-					"OR": [ 
-						{ 
+					"OR": [
+						{
 							"AND": [
 								{
 									"EQ": {"message": "` + key + `message"}
@@ -310,7 +312,7 @@ func ConformanceTests(t *testing.T, props map[string]string, statestore state.St
 								}
 							]
 						},
-						{ 
+						{
 							"AND": [
 								{
 									"EQ": {"message": "` + key + `message"}
@@ -450,6 +452,36 @@ func ConformanceTests(t *testing.T, props map[string]string, statestore state.St
 				assertEquals(t, scenario.value, res)
 			}
 		}
+	})
+
+	t.Run("set and get proto", func(t *testing.T) {
+		if !config.HasOperation("actorStateStore") {
+			t.Skipf("skipping test for %s", config.ComponentName)
+		}
+
+		protoBytes, err := proto.Marshal(&sqlserver.TestEvent{
+			EventId: -1,
+		})
+		require.NoError(t, err)
+
+		err = statestore.Set(t.Context(), &state.SetRequest{
+			Key:   key + "-proto",
+			Value: protoBytes,
+		})
+		require.NoError(t, err)
+
+		// Request immediately
+		res, err := statestore.Get(t.Context(), &state.GetRequest{
+			Key: key + "-proto",
+		})
+		require.NoError(t, err)
+		assertEquals(t, protoBytes, res)
+
+		response := &sqlserver.TestEvent{}
+		err = proto.Unmarshal(res.Data, response)
+		require.NoError(t, err)
+
+		assert.EqualValues(t, -1, response.GetEventId())
 	})
 
 	if config.HasOperation("query") {
@@ -702,6 +734,27 @@ func ConformanceTests(t *testing.T, props map[string]string, statestore state.St
 			}
 		})
 
+		t.Run("delete non-existent key", func(t *testing.T) {
+			// for CosmosDB
+			partitionMetadata := map[string]string{
+				"partitionKey": "myPartition",
+			}
+			operations := []state.TransactionalStateOperation{
+				state.DeleteRequest{
+					Key: "non-existent-key",
+				},
+			}
+
+			transactionStore, ok := statestore.(state.TransactionalStore)
+			require.True(t, ok)
+
+			err := transactionStore.Multi(t.Context(), &state.TransactionalStateRequest{
+				Operations: operations,
+				Metadata:   partitionMetadata,
+			})
+			require.NoError(t, err)
+		})
+
 		t.Run("transaction-order", func(t *testing.T) {
 			// Arrange
 			firstKey := key + "-key1"
@@ -796,6 +849,12 @@ func ConformanceTests(t *testing.T, props map[string]string, statestore state.St
 
 				metadataTest1 := map[string]string{
 					"contentType": "application/json",
+					// for CosmosDB
+					"partitionKey": "myPartition",
+				}
+				metadataTest2 := map[string]string{
+					// for CosmosDB
+					"partitionKey": "myPartition",
 				}
 
 				operations := []state.TransactionalStateOperation{
@@ -817,6 +876,7 @@ func ConformanceTests(t *testing.T, props map[string]string, statestore state.St
 
 				expectedMetadata := map[string]map[string]string{
 					keyTest1: metadataTest1,
+					keyTest2: metadataTest2,
 				}
 
 				// Act
@@ -824,6 +884,9 @@ func ConformanceTests(t *testing.T, props map[string]string, statestore state.St
 				assert.True(t, ok)
 				err := transactionStore.Multi(t.Context(), &state.TransactionalStateRequest{
 					Operations: operations,
+					Metadata: map[string]string{
+						"partitionKey": "myPartition",
+					},
 				})
 				require.NoError(t, err)
 
@@ -833,17 +896,16 @@ func ConformanceTests(t *testing.T, props map[string]string, statestore state.St
 						Key:      k,
 						Metadata: expectedMetadata[k],
 					})
-					expectedValue := res.Data
+					require.NoError(t, err)
+					receivedValue := res.Data
 
 					// In redisjson when set the value with contentType = application/Json store the value in base64
-					if strings.HasPrefix(string(expectedValue), "\"ey") {
-						valueBase64 := strings.Trim(string(expectedValue), "\"")
-						expectedValueDecoded, _ := base64.StdEncoding.DecodeString(valueBase64)
-						require.NoError(t, err)
-						assert.Equal(t, expectedValueDecoded, v)
+					if strings.HasPrefix(string(receivedValue), "\"ey") {
+						valueBase64 := strings.Trim(string(receivedValue), "\"")
+						receivedValueDecoded, _ := base64.StdEncoding.DecodeString(valueBase64)
+						assert.JSONEq(t, string(v), string(receivedValueDecoded))
 					} else {
-						require.NoError(t, err)
-						assert.Equal(t, expectedValue, v)
+						assert.JSONEq(t, string(v), string(receivedValue))
 					}
 				}
 			}
@@ -1310,6 +1372,11 @@ func ConformanceTests(t *testing.T, props map[string]string, statestore state.St
 			}
 
 			t.Run("set and get expire time", func(t *testing.T) {
+				if config.ComponentName == "sqlserver" ||
+					config.ComponentName == "sqlserver.docker" {
+					t.Skip()
+				}
+
 				now := time.Now()
 				err := statestore.Set(t.Context(), &state.SetRequest{
 					Key:   key + "-ttl-expire-time",

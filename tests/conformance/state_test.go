@@ -31,6 +31,7 @@ import (
 	s_cassandra "github.com/dapr/components-contrib/state/cassandra"
 	s_cloudflareworkerskv "github.com/dapr/components-contrib/state/cloudflare/workerskv"
 	s_cockroachdb_v1 "github.com/dapr/components-contrib/state/cockroachdb"
+	s_coherence "github.com/dapr/components-contrib/state/coherence"
 	s_etcd "github.com/dapr/components-contrib/state/etcd"
 	s_gcpfirestore "github.com/dapr/components-contrib/state/gcp/firestore"
 	s_inmemory "github.com/dapr/components-contrib/state/in-memory"
@@ -44,6 +45,7 @@ import (
 	s_rethinkdb "github.com/dapr/components-contrib/state/rethinkdb"
 	s_sqlite "github.com/dapr/components-contrib/state/sqlite"
 	s_sqlserver "github.com/dapr/components-contrib/state/sqlserver"
+	s_sqlserver_v2 "github.com/dapr/components-contrib/state/sqlserver/v2"
 	conf_state "github.com/dapr/components-contrib/tests/conformance/state"
 )
 
@@ -92,6 +94,12 @@ func loadStateStore(name string) state.Store {
 		return s_sqlserver.New(testLogger)
 	case "sqlserver":
 		return s_sqlserver.New(testLogger)
+	case "sqlserver.v2":
+		return s_sqlserver_v2.New(testLogger)
+	case "sqlserver.docker":
+		return s_sqlserver.New(testLogger)
+	case "sqlserver.v2.docker":
+		return s_sqlserver_v2.New(testLogger)
 	case "postgresql.v1.docker":
 		return s_postgresql_v1.NewPostgreSQLStateStore(testLogger)
 	case "postgresql.v1.azure":
@@ -140,6 +148,8 @@ func loadStateStore(name string) state.Store {
 		return s_gcpfirestore.NewFirestoreStateStore(testLogger)
 	case "gcp.firestore.cloud":
 		return s_gcpfirestore.NewFirestoreStateStore(testLogger)
+	case "coherence":
+		return s_coherence.NewCoherenceStateStore(testLogger)
 	default:
 		return nil
 	}

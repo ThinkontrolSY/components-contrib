@@ -17,8 +17,10 @@ package mistral
 import (
 	"context"
 	"reflect"
+	"strings"
 
 	"github.com/dapr/components-contrib/conversation"
+	"github.com/dapr/components-contrib/conversation/langchaingokit"
 	"github.com/dapr/components-contrib/metadata"
 	"github.com/dapr/kit/logger"
 	kmeta "github.com/dapr/kit/metadata"
@@ -28,7 +30,7 @@ import (
 )
 
 type Mistral struct {
-	llm llms.Model
+	langchaingokit.LLM
 
 	logger logger.Logger
 }
@@ -41,8 +43,6 @@ func NewMistral(logger logger.Logger) conversation.Conversation {
 	return m
 }
 
-const defaultModel = "open-mistral-7b"
-
 func (m *Mistral) Init(ctx context.Context, meta conversation.Metadata) error {
 	md := conversation.LangchainMetadata{}
 	err := kmeta.DecodeMetadata(meta.Properties, &md)
@@ -50,10 +50,8 @@ func (m *Mistral) Init(ctx context.Context, meta conversation.Metadata) error {
 		return err
 	}
 
-	model := defaultModel
-	if md.Model != "" {
-		model = md.Model
-	}
+	// Resolve model via central helper (uses metadata, then env var, then default)
+	model := conversation.GetMistralModel(md.Model)
 
 	llm, err := mistral.New(
 		mistral.WithModel(model),
@@ -63,15 +61,15 @@ func (m *Mistral) Init(ctx context.Context, meta conversation.Metadata) error {
 		return err
 	}
 
-	m.llm = llm
+	m.LLM.Model = llm
 
 	if md.CacheTTL != "" {
-		cachedModel, cacheErr := conversation.CacheModel(ctx, md.CacheTTL, m.llm)
+		cachedModel, cacheErr := conversation.CacheModel(ctx, md.CacheTTL, m.LLM.Model)
 		if cacheErr != nil {
 			return cacheErr
 		}
 
-		m.llm = cachedModel
+		m.LLM.Model = cachedModel
 	}
 	return nil
 }
@@ -82,47 +80,60 @@ func (m *Mistral) GetComponentMetadata() (metadataInfo metadata.MetadataMap) {
 	return
 }
 
-func (m *Mistral) Converse(ctx context.Context, r *conversation.ConversationRequest) (res *conversation.ConversationResponse, err error) {
-	messages := make([]llms.MessageContent, 0, len(r.Inputs))
-
-	for _, input := range r.Inputs {
-		role := conversation.ConvertLangchainRole(input.Role)
-
-		messages = append(messages, llms.MessageContent{
-			Role: role,
-			Parts: []llms.ContentPart{
-				llms.TextPart(input.Message),
-			},
-		})
-	}
-
-	opts := []llms.CallOption{}
-
-	if r.Temperature > 0 {
-		opts = append(opts, conversation.LangchainTemperature(r.Temperature))
-	}
-
-	resp, err := m.llm.GenerateContent(ctx, messages, opts...)
-	if err != nil {
-		return nil, err
-	}
-
-	outputs := make([]conversation.ConversationResult, 0, len(resp.Choices))
-
-	for i := range resp.Choices {
-		outputs = append(outputs, conversation.ConversationResult{
-			Result:     resp.Choices[i].Content,
-			Parameters: r.Parameters,
-		})
-	}
-
-	res = &conversation.ConversationResponse{
-		Outputs: outputs,
-	}
-
-	return res, nil
-}
-
 func (m *Mistral) Close() error {
 	return nil
+}
+
+// CreateToolCallPart creates mistral api compatible tool call messages.
+// Most LLM providers can handle tool calls using the tool call object;
+// however, mistral requires it as text in conversation history.
+func CreateToolCallPart(toolCall *llms.ToolCall) llms.ContentPart {
+	if toolCall == nil {
+		return nil
+	}
+
+	if toolCall.FunctionCall == nil {
+		return llms.TextContent{
+			Text: "Tool call [ID: " + toolCall.ID + "]: <no function call>",
+		}
+	}
+
+	return llms.TextContent{
+		Text: "Tool call [ID: " + toolCall.ID + "]: " + toolCall.FunctionCall.Name + "(" + toolCall.FunctionCall.Arguments + ")",
+	}
+}
+
+// CreateToolResponseMessage creates mistral api compatible tool response message
+// using the human role specifically otherwise mistral will reject the tool response message.
+// Most LLM providers can handle tool call responses using the tool call response object;
+// however, mistral requires it as text in conversation history.
+func CreateToolResponseMessage(responses ...llms.ContentPart) llms.MessageContent {
+	msg := llms.MessageContent{
+		Role: llms.ChatMessageTypeHuman,
+	}
+	if len(responses) == 0 {
+		return msg
+	}
+	var toolID, name string
+
+	mistralContentParts := make([]string, 0, len(responses))
+	for _, response := range responses {
+		if resp, ok := response.(llms.ToolCallResponse); ok {
+			if toolID == "" {
+				toolID = resp.ToolCallID
+			}
+			if name == "" {
+				name = resp.Name
+			}
+			mistralContentParts = append(mistralContentParts, resp.Content)
+		}
+	}
+	if len(mistralContentParts) > 0 {
+		msg.Parts = []llms.ContentPart{
+			llms.TextContent{
+				Text: "Tool response [ID: " + toolID + ", Name: " + name + "]: " + strings.Join(mistralContentParts, "\n"),
+			},
+		}
+	}
+	return msg
 }

@@ -34,29 +34,68 @@ func TestInit(t *testing.T) {
 			name: "with default endpoint",
 			metadata: map[string]string{
 				"key":   "test-key",
-				"model": "gpt-4",
+				"model": conversation.DefaultOpenAIModel,
 			},
 			testFn: func(t *testing.T, o *OpenAI, err error) {
 				require.NoError(t, err)
-				assert.NotNil(t, o.llm)
+				assert.NotNil(t, o.LLM)
 			},
 		},
 		{
 			name: "with custom endpoint",
 			metadata: map[string]string{
 				"key":      "test-key",
-				"model":    "gpt-4",
+				"model":    conversation.DefaultOpenAIModel,
 				"endpoint": "https://api.openai.com/v1",
 			},
 			testFn: func(t *testing.T, o *OpenAI, err error) {
 				require.NoError(t, err)
-				assert.NotNil(t, o.llm)
+				assert.NotNil(t, o.LLM)
 				// Since we can't directly access the client's baseURL,
 				// we're mainly testing that initialization succeeds
 			},
 		},
+		{
+			name: "with apiType azure and missing apiVersion",
+			metadata: map[string]string{
+				"key":      "test-key",
+				"model":    conversation.DefaultOpenAIModel,
+				"apiType":  "azure",
+				"endpoint": "https://custom-endpoint.openai.azure.com/",
+			},
+			testFn: func(t *testing.T, o *OpenAI, err error) {
+				require.Error(t, err)
+				assert.EqualError(t, err, "endpoint and apiVersion must be provided when apiType is set to 'azure'")
+			},
+		},
+		{
+			name: "with apiType azure and custom apiVersion",
+			metadata: map[string]string{
+				"key":        "test-key",
+				"model":      conversation.DefaultOpenAIModel,
+				"apiType":    "azure",
+				"endpoint":   "https://custom-endpoint.openai.azure.com/",
+				"apiVersion": "2025-01-01-preview",
+			},
+			testFn: func(t *testing.T, o *OpenAI, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, o.LLM)
+			},
+		},
+		{
+			name: "with apiType azure but missing endpoint",
+			metadata: map[string]string{
+				"key":        "test-key",
+				"model":      conversation.DefaultOpenAIModel,
+				"apiType":    "azure",
+				"apiVersion": "2025-01-01-preview",
+			},
+			testFn: func(t *testing.T, o *OpenAI, err error) {
+				require.Error(t, err)
+				assert.EqualError(t, err, "endpoint and apiVersion must be provided when apiType is set to 'azure'")
+			},
+		},
 	}
-
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			o := NewOpenAI(logger.NewLogger("openai test"))
